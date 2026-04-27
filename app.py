@@ -3,14 +3,67 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
+from uuid import UUID
 
 import pandas as pd
 import requests
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
-APP_TITLE = "Spotify 新歌发现器"
-TRANSFER_URL = "https://www.tunemymusic.com/zh-CN/transfer"
+APP_TITLE = "全平台新歌发现器"
+AUTH_MODE_EMAIL = "邮箱登录"
+PLATFORM_OPTIONS = {
+    "Spotify": {
+        "slug": "spotify",
+        "description": "适合导出到 Spotify，并继续用 TuneMyMusic 做迁移或导入。",
+        "transfer_label": "打开 TuneMyMusic 导入页面",
+        "transfer_title": "下一步：导入到 Spotify",
+        "transfer_text": "选好最终歌单后，可以直接打开 TuneMyMusic，把刚下载的 TXT 或 CSV 导入并继续传到 Spotify。",
+        "transfer_url": "https://www.tunemymusic.com/zh-CN/transfer",
+        "txt_filename": "spotify_selected_tracks.txt",
+        "csv_filename": "spotify_selected_tracks.csv",
+    },
+    "网易云音乐": {
+        "slug": "netease",
+        "description": "导出更适合中文平台搜索的歌单文本，再手动导入或搜索。",
+        "transfer_label": "打开网易云音乐",
+        "transfer_title": "下一步：导入到网易云音乐",
+        "transfer_text": "你可以先下载歌单文本，再到网易云音乐里逐首搜索，或配合第三方迁移工具继续处理。",
+        "transfer_url": "https://music.163.com/",
+        "txt_filename": "netease_selected_tracks.txt",
+        "csv_filename": "netease_selected_tracks.csv",
+    },
+    "QQ 音乐": {
+        "slug": "qqmusic",
+        "description": "导出文本后可在 QQ 音乐中逐首搜索，适合整理中文平台歌单。",
+        "transfer_label": "打开 QQ 音乐",
+        "transfer_title": "下一步：导入到 QQ 音乐",
+        "transfer_text": "下载歌单后，可以到 QQ 音乐搜索同名歌曲，或配合第三方工具做后续导入。",
+        "transfer_url": "https://y.qq.com/",
+        "txt_filename": "qqmusic_selected_tracks.txt",
+        "csv_filename": "qqmusic_selected_tracks.csv",
+    },
+    "酷狗音乐": {
+        "slug": "kugou",
+        "description": "导出歌单文本后，适合到酷狗音乐中做关键词搜索与收藏。",
+        "transfer_label": "打开酷狗音乐",
+        "transfer_title": "下一步：导入到酷狗音乐",
+        "transfer_text": "下载后的歌单可以作为酷狗音乐搜索依据，适合手动逐首确认并加入歌单。",
+        "transfer_url": "https://www.kugou.com/",
+        "txt_filename": "kugou_selected_tracks.txt",
+        "csv_filename": "kugou_selected_tracks.csv",
+    },
+    "通用导出": {
+        "slug": "universal",
+        "description": "输出标准歌单文本和 CSV，适合任何平台或后续自定义处理。",
+        "transfer_label": "打开 TuneMyMusic",
+        "transfer_title": "下一步：继续导入到其他平台",
+        "transfer_text": "如果你还没决定平台，先导出通用文本和 CSV。之后可以再导入 Spotify、网易云、QQ 音乐或其他服务。",
+        "transfer_url": "https://www.tunemymusic.com/zh-CN/transfer",
+        "txt_filename": "universal_selected_tracks.txt",
+        "csv_filename": "universal_selected_tracks.csv",
+    },
+}
 DEFAULT_NAMESPACE = "my-presets"
 DEFAULT_ARTISTS = """Taylor Swift
 Drake
@@ -23,7 +76,7 @@ Billie Eilish
 Travis Scott
 Calvin Harris"""
 
-APP_SUBTITLE = "发现候选新歌，手动挑选，导出最终歌单。适合任何流派、任何艺人列表。"
+APP_SUBTITLE = "发现候选新歌，手动挑选，导出到 Spotify、网易云音乐、QQ 音乐、酷狗音乐等多个平台。"
 CUSTOM_TEMPLATE_FILE = Path(__file__).with_name("user_artist_templates.json")
 ARTIST_TEMPLATES = {
     "通用流行": """Taylor Swift
@@ -112,6 +165,14 @@ def build_playlist_text(dataframe: pd.DataFrame) -> str:
     )
 
 
+def build_platform_playlist_text(dataframe: pd.DataFrame, platform: str) -> str:
+    if platform in {"网易云音乐", "QQ 音乐", "酷狗音乐"}:
+        return "\n".join(
+            f"{row['歌曲']} - {row['艺人']}" for _, row in dataframe.iterrows()
+        )
+    return build_playlist_text(dataframe)
+
+
 def build_csv(dataframe: pd.DataFrame) -> bytes:
     return dataframe.to_csv(index=False).encode("utf-8-sig")
 
@@ -154,6 +215,95 @@ def build_supabase_headers() -> dict[str, str]:
         "apikey": supabase_key,
         "Content-Type": "application/json",
     }
+
+
+def build_supabase_auth_headers() -> dict[str, str]:
+    _, supabase_key = get_supabase_config()
+    if not supabase_key:
+        raise ValueError("Supabase 未配置。")
+
+    return {
+        "apikey": supabase_key,
+        "Content-Type": "application/json",
+    }
+
+
+def is_uuid_like(value: str) -> bool:
+    try:
+        UUID(str(value))
+        return True
+    except ValueError:
+        return False
+
+
+def build_user_namespace(user: dict) -> str:
+    user_id = str(user.get("id", "")).strip()
+    email = str(user.get("email", "")).strip().lower()
+
+    if user_id and is_uuid_like(user_id):
+        return user_id
+    if email:
+        return f"user:{email}"
+    return DEFAULT_NAMESPACE
+
+
+def supabase_sign_up(email: str, password: str) -> tuple[bool, str]:
+    supabase_url, _ = get_supabase_config()
+    endpoint = f"{supabase_url.rstrip('/')}/auth/v1/signup"
+    payload = {
+        "email": email,
+        "password": password,
+    }
+    response = requests.post(
+        endpoint,
+        headers=build_supabase_auth_headers(),
+        json=payload,
+        timeout=20,
+    )
+
+    if response.ok:
+        return True, "注册成功。你现在可以直接登录；如果你启用了邮箱验证，请先验证邮箱。"
+
+    try:
+        detail = response.json()
+        error_message = detail.get("msg") or detail.get("error_description") or detail.get("message")
+    except ValueError:
+        error_message = response.text
+
+    return False, error_message or "注册失败。"
+
+
+def supabase_sign_in(email: str, password: str) -> tuple[bool, dict | None, str]:
+    supabase_url, _ = get_supabase_config()
+    endpoint = f"{supabase_url.rstrip('/')}/auth/v1/token?grant_type=password"
+    payload = {
+        "email": email,
+        "password": password,
+    }
+    response = requests.post(
+        endpoint,
+        headers=build_supabase_auth_headers(),
+        json=payload,
+        timeout=20,
+    )
+
+    if response.ok:
+        data = response.json()
+        user = data.get("user", {}) or {}
+        return True, {
+            "email": user.get("email", email),
+            "id": user.get("id", ""),
+            "access_token": data.get("access_token", ""),
+            "refresh_token": data.get("refresh_token", ""),
+        }, "登录成功。"
+
+    try:
+        detail = response.json()
+        error_message = detail.get("msg") or detail.get("error_description") or detail.get("message")
+    except ValueError:
+        error_message = response.text
+
+    return False, None, error_message or "登录失败。"
 
 
 def load_local_templates() -> dict[str, str]:
@@ -533,7 +683,7 @@ def render_hero() -> None:
     st.markdown(
         f"""
         <div class="hero">
-            <div class="hero-kicker">Spotify-ready workflow</div>
+            <div class="hero-kicker">Multi-platform workflow</div>
             <div class="hero-title">{APP_TITLE}</div>
             <p class="hero-text">{APP_SUBTITLE} 先从艺人池里抓候选曲目，再在页面里试听、筛选、勾选，最后导出你真正想保留的歌单。</p>
             <div class="hero-grid">
@@ -556,13 +706,14 @@ def render_hero() -> None:
     )
 
 
-def render_transfer_card() -> None:
+def render_transfer_card(platform: str) -> None:
+    platform_config = PLATFORM_OPTIONS[platform]
     st.markdown(
         f"""
         <div class="transfer-card">
-            <div class="transfer-card-title">下一步：导入到 Spotify</div>
-            <p class="transfer-card-text">选好最终歌单后，可以直接打开 TuneMyMusic，把刚下载的 TXT 或 CSV 导入并继续传到 Spotify。</p>
-            <a class="transfer-link" href="{TRANSFER_URL}" target="_blank">打开 TuneMyMusic 导入页面</a>
+            <div class="transfer-card-title">{platform_config["transfer_title"]}</div>
+            <p class="transfer-card-text">{platform_config["transfer_text"]}</p>
+            <a class="transfer-link" href="{platform_config["transfer_url"]}" target="_blank">{platform_config["transfer_label"]}</a>
         </div>
         """,
         unsafe_allow_html=True,
@@ -622,6 +773,8 @@ if "last_search_meta" not in st.session_state:
     st.session_state.last_search_meta = {}
 if "selected_track_ids" not in st.session_state:
     st.session_state.selected_track_ids = []
+if "target_platform" not in st.session_state:
+    st.session_state.target_platform = "Spotify"
 if "artists_text" not in st.session_state:
     st.session_state.artists_text = DEFAULT_ARTISTS
 if "custom_template_name" not in st.session_state:
@@ -638,14 +791,94 @@ if "save_template_success_message" not in st.session_state:
     st.session_state.save_template_success_message = ""
 if "clear_custom_template_name" not in st.session_state:
     st.session_state.clear_custom_template_name = False
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+if "auth_message" not in st.session_state:
+    st.session_state.auth_message = ""
+if "auth_error" not in st.session_state:
+    st.session_state.auth_error = ""
+if "auth_email" not in st.session_state:
+    st.session_state.auth_email = ""
+if "auth_password" not in st.session_state:
+    st.session_state.auth_password = ""
 
 if st.session_state.clear_custom_template_name:
     st.session_state.custom_template_name = ""
     st.session_state.clear_custom_template_name = False
 
 with st.sidebar:
+    st.markdown("## 账号")
+    if has_remote_storage():
+        if st.session_state.auth_message:
+            st.success(st.session_state.auth_message)
+            st.session_state.auth_message = ""
+        if st.session_state.auth_error:
+            st.error(st.session_state.auth_error)
+            st.session_state.auth_error = ""
+
+        if st.session_state.auth_user:
+            st.success(f"已登录：{st.session_state.auth_user['email']}")
+            st.caption("登录后，你的预设会自动保存到个人账号空间。")
+            if st.button("退出登录", use_container_width=True):
+                st.session_state.auth_user = None
+                st.session_state.custom_templates = load_custom_templates(DEFAULT_NAMESPACE)
+                st.session_state.preset_namespace = DEFAULT_NAMESPACE
+                st.session_state.preset_namespace_input = DEFAULT_NAMESPACE
+                st.session_state.last_loaded_namespace = DEFAULT_NAMESPACE
+                st.rerun()
+        else:
+            st.caption("登录后可把预设自动绑定到你的个人账号。")
+            with st.form("auth_form"):
+                st.text_input("邮箱", key="auth_email", placeholder="you@example.com")
+                st.text_input("密码", key="auth_password", type="password", placeholder="至少 6 位")
+                auth_action = st.radio(
+                    "操作",
+                    [AUTH_MODE_EMAIL, "注册账号"],
+                    horizontal=True,
+                )
+                submitted = st.form_submit_button("继续")
+
+            if submitted:
+                email = st.session_state.auth_email.strip()
+                password = st.session_state.auth_password.strip()
+                if not email or not password:
+                    st.session_state.auth_error = "请先输入邮箱和密码。"
+                    st.rerun()
+                elif len(password) < 6:
+                    st.session_state.auth_error = "密码至少需要 6 位。"
+                    st.rerun()
+                elif auth_action == "注册账号":
+                    success, message = supabase_sign_up(email, password)
+                    if success:
+                        st.session_state.auth_message = message
+                    else:
+                        st.session_state.auth_error = message
+                    st.rerun()
+                else:
+                    success, user, message = supabase_sign_in(email, password)
+                    if success and user:
+                        user_namespace = build_user_namespace(user)
+                        st.session_state.auth_user = user
+                        st.session_state.auth_message = message
+                        st.session_state.preset_namespace = user_namespace
+                        st.session_state.preset_namespace_input = user_namespace
+                        st.session_state.last_loaded_namespace = user_namespace
+                        st.session_state.custom_templates = load_custom_templates(user_namespace)
+                    else:
+                        st.session_state.auth_error = message
+                    st.rerun()
+    else:
+        st.info("当前未配置 Supabase，登录功能不可用，本地仍可正常使用。")
+
     st.markdown("## 参数设置")
     st.caption("控制抓取范围与候选池大小")
+    target_platform = st.selectbox(
+        "目标平台",
+        list(PLATFORM_OPTIONS.keys()),
+        key="target_platform",
+        help="切换后，导出文件名、文案和跳转入口会随平台变化。",
+    )
+    st.caption(PLATFORM_OPTIONS[target_platform]["description"])
     days = st.slider("只保留最近多少天发布的歌", min_value=7, max_value=365, value=60)
     result_limit = st.slider("每位艺人最多抓取多少条候选结果", min_value=5, max_value=30, value=12)
     st.info("数据源为 iTunes Search API，适合做候选曲目初筛。")
@@ -675,25 +908,36 @@ with st.sidebar:
     if st.session_state.save_template_success_message:
         st.success(st.session_state.save_template_success_message)
         st.session_state.save_template_success_message = ""
-    st.text_input(
-        "预设空间名",
-        key="preset_namespace_input",
-        help="不同设备填写同一个预设空间名，就能看到同一组预设。",
-    )
-    namespace = st.session_state.preset_namespace_input.strip() or DEFAULT_NAMESPACE
-
-    sync_col_1, sync_col_2 = st.columns(2)
-    with sync_col_1:
-        if st.button("加载这个空间", use_container_width=True):
+    if st.session_state.auth_user:
+        namespace = build_user_namespace(st.session_state.auth_user)
+        st.caption("当前使用登录账号的个人预设空间。")
+        if st.button("刷新我的预设", use_container_width=True):
             try:
-                st.session_state.preset_namespace = namespace
                 st.session_state.custom_templates = load_custom_templates(namespace)
                 st.session_state.last_loaded_namespace = namespace
                 st.rerun()
             except requests.RequestException as exc:
                 st.error(f"刷新预设失败：{exc}")
-    with sync_col_2:
-        st.caption("跨设备时请保持同一个预设空间名")
+    else:
+        st.text_input(
+            "预设空间名",
+            key="preset_namespace_input",
+            help="不同设备填写同一个预设空间名，就能看到同一组预设。",
+        )
+        namespace = st.session_state.preset_namespace_input.strip() or DEFAULT_NAMESPACE
+
+        sync_col_1, sync_col_2 = st.columns(2)
+        with sync_col_1:
+            if st.button("加载这个空间", use_container_width=True):
+                try:
+                    st.session_state.preset_namespace = namespace
+                    st.session_state.custom_templates = load_custom_templates(namespace)
+                    st.session_state.last_loaded_namespace = namespace
+                    st.rerun()
+                except requests.RequestException as exc:
+                    st.error(f"刷新预设失败：{exc}")
+        with sync_col_2:
+            st.caption("跨设备时请保持同一个预设空间名")
 
     custom_templates = st.session_state.custom_templates
     custom_template_names = sorted(custom_templates.keys())
@@ -743,225 +987,4 @@ with st.sidebar:
                     custom_templates = st.session_state.custom_templates
                 st.session_state.custom_templates = save_custom_template(
                     namespace,
-                    preset_name,
-                    preset_value,
-                    custom_templates,
-                )
-                st.session_state.preset_namespace = namespace
-                st.session_state.last_loaded_namespace = namespace
-                st.session_state["save_template_success_message"] = f"已保存预设：{preset_name}"
-                st.session_state["clear_custom_template_name"] = True
-                st.rerun()
-            except requests.RequestException as exc:
-                st.error(f"保存预设失败：{exc}")
-
-artists_text = st.text_area(
-    "输入你想监控的艺人，一行一个",
-    key="artists_text",
-    height=240,
-    placeholder="例如：Anyma",
-)
-
-search_clicked = st.button("抓取新歌", type="primary", use_container_width=True)
-
-if search_clicked:
-    artists = [artist.strip() for artist in artists_text.splitlines() if artist.strip()]
-
-    if not artists:
-        st.error("请先输入至少 1 位艺人。")
-    else:
-        with st.spinner("正在抓取最近发布的候选歌曲..."):
-            results_df, warnings = fetch_recent_tracks(artists, days, result_limit)
-            st.session_state.results_df = results_df
-            st.session_state.warnings = warnings
-            st.session_state.last_search_meta = {
-                "artist_count": len(artists),
-                "days": days,
-                "result_limit": result_limit,
-            }
-            st.session_state.selected_track_ids = []
-
-results_df = st.session_state.results_df
-warnings = st.session_state.warnings
-last_search_meta = st.session_state.last_search_meta
-
-for warning in warnings:
-    st.warning(warning)
-
-if search_clicked or not results_df.empty:
-    if results_df.empty:
-        st.warning("没有抓到最近发布的候选歌曲。可以把天数调大一点，比如 180 天。")
-    else:
-        full_csv_bytes = build_csv(exportable_dataframe(results_df))
-        selected_track_ids = set(st.session_state.selected_track_ids)
-
-        metric_1, metric_2, metric_3, metric_4, metric_5 = st.columns(5)
-        metric_1.metric("监控艺人数", last_search_meta.get("artist_count", 0))
-        metric_2.metric("候选歌曲数", len(results_df))
-        metric_3.metric("时间范围", f"近 {last_search_meta.get('days', days)} 天")
-        metric_4.metric("涉及流派数", results_df["类型"].nunique())
-        metric_5.metric("已选歌曲数", len(selected_track_ids))
-
-        st.markdown('<div class="section-label">结果筛选</div>', unsafe_allow_html=True)
-        filter_col_1, filter_col_2 = st.columns([2, 1])
-        all_artists = ["全部艺人"] + sorted(results_df["艺人"].dropna().unique().tolist())
-        selected_artist = filter_col_1.selectbox("按艺人查看", all_artists)
-        sort_option = filter_col_2.selectbox(
-            "排序方式",
-            ["发布日期（新到旧）", "发布日期（旧到新）", "艺人名称"],
-        )
-
-        filtered_df = results_df.copy()
-        if selected_artist != "全部艺人":
-            filtered_df = filtered_df[filtered_df["艺人"] == selected_artist]
-
-        if sort_option == "发布日期（旧到新）":
-            filtered_df = filtered_df.sort_values(by=["发布日期", "艺人", "歌曲"], ascending=[True, True, True])
-        elif sort_option == "艺人名称":
-            filtered_df = filtered_df.sort_values(by=["艺人", "发布日期", "歌曲"], ascending=[True, False, True])
-
-        selection_df = filtered_df.copy()
-        selection_df["入选"] = selection_df["track_id"].isin(selected_track_ids)
-
-        tab_table, tab_cards, tab_picker, tab_playlist = st.tabs(
-            ["表格视图", "卡片视图", "手动选歌", "歌单导出"]
-        )
-
-        with tab_table:
-            st.dataframe(
-                filtered_df.drop(columns=["track_id"]),
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "封面": st.column_config.ImageColumn("封面", help="专辑封面"),
-                    "预览": st.column_config.LinkColumn("试听预览"),
-                    "商店链接": st.column_config.LinkColumn("商店链接"),
-                },
-            )
-
-        with tab_cards:
-            preview_rows = filtered_df.head(12).to_dict("records")
-            if not preview_rows:
-                st.info("当前筛选条件下没有可展示的歌曲。")
-            else:
-                for item in preview_rows:
-                    cover_col, info_col = st.columns([1, 3])
-                    with cover_col:
-                        if item["封面"]:
-                            st.image(item["封面"], use_container_width=True)
-                    with info_col:
-                        st.markdown(f"### {item['歌曲']}")
-                        st.markdown(
-                            f"**艺人**：{item['艺人']}  \n"
-                            f"**专辑**：{item['专辑'] or '未知'}  \n"
-                            f"**发布日期**：{item['发布日期']}  \n"
-                            f"**类型**：{item['类型'] or '未知'}  \n"
-                            f"**时长**：{item['时长(分钟)'] or '未知'} 分钟"
-                        )
-                        link_parts = []
-                        if item["预览"]:
-                            link_parts.append(f"[试听预览]({item['预览']})")
-                        if item["商店链接"]:
-                            link_parts.append(f"[商店页面]({item['商店链接']})")
-                        if link_parts:
-                            st.markdown(" | ".join(link_parts))
-                    st.divider()
-
-        with tab_picker:
-            st.caption("勾选你真正想保留到最终歌单里的歌曲。")
-            editable_df = st.data_editor(
-                selection_df[
-                    ["入选", "艺人", "歌曲", "专辑", "类型", "发布日期", "时长(分钟)", "预览", "商店链接", "track_id"]
-                ],
-                use_container_width=True,
-                hide_index=True,
-                disabled=["艺人", "歌曲", "专辑", "类型", "发布日期", "时长(分钟)", "预览", "商店链接", "track_id"],
-                column_config={
-                    "入选": st.column_config.CheckboxColumn("入选"),
-                    "预览": st.column_config.LinkColumn("试听预览"),
-                    "商店链接": st.column_config.LinkColumn("商店链接"),
-                    "track_id": None,
-                },
-                key="track_picker_editor",
-            )
-            newly_selected_ids = editable_df.loc[editable_df["入选"], "track_id"].tolist()
-            hidden_ids = set(results_df["track_id"]) - set(filtered_df["track_id"])
-            preserved_ids = selected_track_ids.intersection(hidden_ids)
-            st.session_state.selected_track_ids = sorted(set(newly_selected_ids).union(preserved_ids))
-
-            picker_col_1, picker_col_2 = st.columns(2)
-            with picker_col_1:
-                if st.button("将当前筛选结果全部加入歌单", use_container_width=True):
-                    st.session_state.selected_track_ids = sorted(
-                        set(st.session_state.selected_track_ids).union(set(filtered_df["track_id"]))
-                    )
-                    st.rerun()
-            with picker_col_2:
-                if st.button("清空已选歌曲", use_container_width=True):
-                    st.session_state.selected_track_ids = []
-                    st.rerun()
-
-        with tab_playlist:
-            selected_df = results_df[results_df["track_id"].isin(st.session_state.selected_track_ids)].copy()
-            selected_df = selected_df.sort_values(
-                by=["发布日期", "艺人", "歌曲"], ascending=[False, True, True]
-            )
-            selected_playlist_text = build_playlist_text(selected_df)
-            selected_csv_bytes = build_csv(exportable_dataframe(selected_df))
-
-            if selected_df.empty:
-                st.info("你还没有选择歌曲。先去“手动选歌”标签页勾选想保留的候选曲目。")
-            else:
-                st.success(f"当前最终歌单里已有 {len(selected_df)} 首歌。")
-
-            st.text_area(
-                "最终歌单文本",
-                selected_playlist_text,
-                height=240,
-            )
-            download_col_1, download_col_2, download_col_3 = st.columns(3)
-            with download_col_1:
-                st.download_button(
-                    "下载最终歌单 TXT",
-                    selected_playlist_text,
-                    file_name="spotify_selected_tracks.txt",
-                    mime="text/plain",
-                    use_container_width=True,
-                )
-            with download_col_2:
-                st.download_button(
-                    "下载最终歌单 CSV",
-                    selected_csv_bytes,
-                    file_name="spotify_selected_tracks.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-            with download_col_3:
-                st.download_button(
-                    "下载完整结果 CSV",
-                    full_csv_bytes,
-                    file_name="spotify_candidate_tracks.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-
-            if not selected_df.empty:
-                st.dataframe(
-                    selected_df.drop(columns=["track_id"]),
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "封面": st.column_config.ImageColumn("封面", help="专辑封面"),
-                        "预览": st.column_config.LinkColumn("试听预览"),
-                        "商店链接": st.column_config.LinkColumn("商店链接"),
-                    },
-                )
-
-            render_transfer_card()
-
-        with st.expander("查看本次抓取说明"):
-            st.write(
-                f"本次共监控 **{last_search_meta.get('artist_count', 0)}** 位艺人，"
-                f"每位艺人最多抓取 **{last_search_meta.get('result_limit', result_limit)}** 条候选结果，"
-                f"仅保留最近 **{last_search_meta.get('days', days)}** 天发布的歌曲。"
-            )
+                    prese
