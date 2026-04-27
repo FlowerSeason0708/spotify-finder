@@ -636,6 +636,12 @@ if "custom_templates" not in st.session_state:
     st.session_state.custom_templates = load_custom_templates(st.session_state.preset_namespace)
 if "save_template_success_message" not in st.session_state:
     st.session_state.save_template_success_message = ""
+if "clear_custom_template_name" not in st.session_state:
+    st.session_state.clear_custom_template_name = False
+
+if st.session_state.clear_custom_template_name:
+    st.session_state.custom_template_name = ""
+    st.session_state.clear_custom_template_name = False
 
 with st.sidebar:
     st.markdown("## 参数设置")
@@ -743,8 +749,8 @@ with st.sidebar:
                 )
                 st.session_state.preset_namespace = namespace
                 st.session_state.last_loaded_namespace = namespace
-                st.session_state["custom_template_name"] = ""
                 st.session_state["save_template_success_message"] = f"已保存预设：{preset_name}"
+                st.session_state["clear_custom_template_name"] = True
                 st.rerun()
             except requests.RequestException as exc:
                 st.error(f"保存预设失败：{exc}")
