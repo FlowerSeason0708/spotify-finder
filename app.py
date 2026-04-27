@@ -461,7 +461,8 @@ def inject_styles() -> None:
             font-weight: 700;
         }
         .stButton > button,
-        .stDownloadButton > button {
+        .stDownloadButton > button,
+        .stFormSubmitButton > button {
             background: linear-gradient(135deg, #1ed760 0%, #169c48 100%);
             color: #041109 !important;
             border: none;
@@ -470,7 +471,8 @@ def inject_styles() -> None:
             box-shadow: 0 12px 26px rgba(12, 75, 37, 0.32);
         }
         .stButton > button:hover,
-        .stDownloadButton > button:hover {
+        .stDownloadButton > button:hover,
+        .stFormSubmitButton > button:hover {
             background: linear-gradient(135deg, #32e26f 0%, #18ad50 100%);
             color: #041109 !important;
         }
