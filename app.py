@@ -987,4 +987,227 @@ with st.sidebar:
                     custom_templates = st.session_state.custom_templates
                 st.session_state.custom_templates = save_custom_template(
                     namespace,
-                    prese
+                    preset_name,
+                    preset_value,
+                    custom_templates,
+                )
+                st.session_state.preset_namespace = namespace
+                st.session_state.last_loaded_namespace = namespace
+                st.session_state["save_template_success_message"] = f"已保存预设：{preset_name}"
+                st.session_state["clear_custom_template_name"] = True
+                st.rerun()
+            except requests.RequestException as exc:
+                st.error(f"保存预设失败：{exc}")
+
+artists_text = st.text_area(
+    "输入你想监控的艺人，一行一个",
+    key="artists_text",
+    height=240,
+    placeholder="例如：Anyma",
+)
+
+search_clicked = st.button("抓取新歌", type="primary", use_container_width=True)
+
+if search_clicked:
+    artists = [artist.strip() for artist in artists_text.splitlines() if artist.strip()]
+
+    if not artists:
+        st.error("请先输入至少 1 位艺人。")
+    else:
+        with st.spinner("正在抓取最近发布的候选歌曲..."):
+            results_df, warnings = fetch_recent_tracks(artists, days, result_limit)
+            st.session_state.results_df = results_df
+            st.session_state.warnings = warnings
+            st.session_state.last_search_meta = {
+                "artist_count": len(artists),
+                "days": days,
+                "result_limit": result_limit,
+            }
+            st.session_state.selected_track_ids = []
+
+results_df = st.session_state.results_df
+warnings = st.session_state.warnings
+last_search_meta = st.session_state.last_search_meta
+
+for warning in warnings:
+    st.warning(warning)
+
+if search_clicked or not results_df.empty:
+    if results_df.empty:
+        st.warning("没有抓到最近发布的候选歌曲。可以把天数调大一点，比如 180 天。")
+    else:
+        full_csv_bytes = build_csv(exportable_dataframe(results_df))
+        selected_track_ids = set(st.session_state.selected_track_ids)
+        platform_config = PLATFORM_OPTIONS[st.session_state.target_platform]
+
+        metric_1, metric_2, metric_3, metric_4, metric_5 = st.columns(5)
+        metric_1.metric("监控艺人数", last_search_meta.get("artist_count", 0))
+        metric_2.metric("候选歌曲数", len(results_df))
+        metric_3.metric("时间范围", f"近 {last_search_meta.get('days', days)} 天")
+        metric_4.metric("涉及流派数", results_df["类型"].nunique())
+        metric_5.metric("已选歌曲数", len(selected_track_ids))
+
+        st.markdown('<div class="section-label">结果筛选</div>', unsafe_allow_html=True)
+        filter_col_1, filter_col_2 = st.columns([2, 1])
+        all_artists = ["全部艺人"] + sorted(results_df["艺人"].dropna().unique().tolist())
+        selected_artist = filter_col_1.selectbox("按艺人查看", all_artists)
+        sort_option = filter_col_2.selectbox(
+            "排序方式",
+            ["发布日期（新到旧）", "发布日期（旧到新）", "艺人名称"],
+        )
+
+        filtered_df = results_df.copy()
+        if selected_artist != "全部艺人":
+            filtered_df = filtered_df[filtered_df["艺人"] == selected_artist]
+
+        if sort_option == "发布日期（旧到新）":
+            filtered_df = filtered_df.sort_values(by=["发布日期", "艺人", "歌曲"], ascending=[True, True, True])
+        elif sort_option == "艺人名称":
+            filtered_df = filtered_df.sort_values(by=["艺人", "发布日期", "歌曲"], ascending=[True, False, True])
+
+        selection_df = filtered_df.copy()
+        selection_df["入选"] = selection_df["track_id"].isin(selected_track_ids)
+
+        tab_table, tab_cards, tab_picker, tab_playlist = st.tabs(
+            ["表格视图", "卡片视图", "手动选歌", "歌单导出"]
+        )
+
+        with tab_table:
+            st.dataframe(
+                filtered_df.drop(columns=["track_id"]),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "封面": st.column_config.ImageColumn("封面", help="专辑封面"),
+                    "预览": st.column_config.LinkColumn("试听预览"),
+                    "商店链接": st.column_config.LinkColumn("商店链接"),
+                },
+            )
+
+        with tab_cards:
+            preview_rows = filtered_df.head(12).to_dict("records")
+            if not preview_rows:
+                st.info("当前筛选条件下没有可展示的歌曲。")
+            else:
+                for item in preview_rows:
+                    cover_col, info_col = st.columns([1, 3])
+                    with cover_col:
+                        if item["封面"]:
+                            st.image(item["封面"], use_container_width=True)
+                    with info_col:
+                        st.markdown(f"### {item['歌曲']}")
+                        st.markdown(
+                            f"**艺人**：{item['艺人']}  \n"
+                            f"**专辑**：{item['专辑'] or '未知'}  \n"
+                            f"**发布日期**：{item['发布日期']}  \n"
+                            f"**类型**：{item['类型'] or '未知'}  \n"
+                            f"**时长**：{item['时长(分钟)'] or '未知'} 分钟"
+                        )
+                        link_parts = []
+                        if item["预览"]:
+                            link_parts.append(f"[试听预览]({item['预览']})")
+                        if item["商店链接"]:
+                            link_parts.append(f"[商店页面]({item['商店链接']})")
+                        if link_parts:
+                            st.markdown(" | ".join(link_parts))
+                    st.divider()
+
+        with tab_picker:
+            st.caption("勾选你真正想保留到最终歌单里的歌曲。")
+            editable_df = st.data_editor(
+                selection_df[
+                    ["入选", "艺人", "歌曲", "专辑", "类型", "发布日期", "时长(分钟)", "预览", "商店链接", "track_id"]
+                ],
+                use_container_width=True,
+                hide_index=True,
+                disabled=["艺人", "歌曲", "专辑", "类型", "发布日期", "时长(分钟)", "预览", "商店链接", "track_id"],
+                column_config={
+                    "入选": st.column_config.CheckboxColumn("入选"),
+                    "预览": st.column_config.LinkColumn("试听预览"),
+                    "商店链接": st.column_config.LinkColumn("商店链接"),
+                    "track_id": None,
+                },
+                key="track_picker_editor",
+            )
+            newly_selected_ids = editable_df.loc[editable_df["入选"], "track_id"].tolist()
+            hidden_ids = set(results_df["track_id"]) - set(filtered_df["track_id"])
+            preserved_ids = selected_track_ids.intersection(hidden_ids)
+            st.session_state.selected_track_ids = sorted(set(newly_selected_ids).union(preserved_ids))
+
+            picker_col_1, picker_col_2 = st.columns(2)
+            with picker_col_1:
+                if st.button("将当前筛选结果全部加入歌单", use_container_width=True):
+                    st.session_state.selected_track_ids = sorted(
+                        set(st.session_state.selected_track_ids).union(set(filtered_df["track_id"]))
+                    )
+                    st.rerun()
+            with picker_col_2:
+                if st.button("清空已选歌曲", use_container_width=True):
+                    st.session_state.selected_track_ids = []
+                    st.rerun()
+
+        with tab_playlist:
+            selected_df = results_df[results_df["track_id"].isin(st.session_state.selected_track_ids)].copy()
+            selected_df = selected_df.sort_values(
+                by=["发布日期", "艺人", "歌曲"], ascending=[False, True, True]
+            )
+            selected_playlist_text = build_platform_playlist_text(selected_df, st.session_state.target_platform)
+            selected_csv_bytes = build_csv(exportable_dataframe(selected_df))
+
+            if selected_df.empty:
+                st.info("你还没有选择歌曲。先去“手动选歌”标签页勾选想保留的候选曲目。")
+            else:
+                st.success(f"当前最终歌单里已有 {len(selected_df)} 首歌。")
+                st.caption(f"当前导出目标平台：{st.session_state.target_platform}")
+
+            st.text_area(
+                "最终歌单文本",
+                selected_playlist_text,
+                height=240,
+            )
+            download_col_1, download_col_2, download_col_3 = st.columns(3)
+            with download_col_1:
+                st.download_button(
+                    "下载最终歌单 TXT",
+                    selected_playlist_text,
+                    file_name=platform_config["txt_filename"],
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            with download_col_2:
+                st.download_button(
+                    "下载最终歌单 CSV",
+                    selected_csv_bytes,
+                    file_name=platform_config["csv_filename"],
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            with download_col_3:
+                st.download_button(
+                    "下载完整结果 CSV",
+                    full_csv_bytes,
+                    file_name=f"{platform_config['slug']}_candidate_tracks.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+
+            if not selected_df.empty:
+                st.dataframe(
+                    selected_df.drop(columns=["track_id"]),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "封面": st.column_config.ImageColumn("封面", help="专辑封面"),
+                        "预览": st.column_config.LinkColumn("试听预览"),
+                        "商店链接": st.column_config.LinkColumn("商店链接"),
+                    },
+                )
+
+            render_transfer_card(st.session_state.target_platform)
+
+        with st.expander("查看本次抓取说明"):
+            st.write(
+                f"本次共监控 **{last_search_meta.get('artist_count', 0)}** 位艺人，"
+                f"每位艺人最多抓取 **{last_search_meta.get('result_limit', result_limit)}** 条候选结果，"
+                f"仅保留最近 **{last_search_meta.get('days', days)}** 天发布的歌曲。"
+            )
