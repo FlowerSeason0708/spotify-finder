@@ -150,16 +150,10 @@ def build_supabase_headers() -> dict[str, str]:
     if not supabase_url or not supabase_key:
         raise ValueError("Supabase 未配置。")
 
-    headers = {
+    return {
         "apikey": supabase_key,
         "Content-Type": "application/json",
     }
-    # Legacy anon keys are JWT-like and can be sent as Bearer tokens.
-    # New publishable keys should not be sent in Authorization headers.
-    if supabase_key.count(".") == 2:
-        headers["Authorization"] = f"Bearer {supabase_key}"
-
-    return headers
 
 
 def load_local_templates() -> dict[str, str]:
