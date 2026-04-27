@@ -75,6 +75,40 @@ SUPABASE_ANON_KEY = "你的 Supabase anon key"
 
 只要你在不同电脑、不同浏览器里填写同一个空间名，再点击“加载这个空间”，就能看到同一组预设。
 
+## 可选：开启邮箱登录
+
+如果你希望每个用户登录后自动拥有自己的个人预设，可以继续开启 Supabase Auth。
+
+### 1. 在 Supabase 打开 Email 登录
+
+进入：
+
+`Authentication -> Providers -> Email`
+
+确认 Email 登录已开启。
+
+### 2. 是否开启邮箱确认
+
+你可以二选一：
+
+- 开启邮箱确认：更安全，但用户注册后要先去邮箱验证
+- 关闭邮箱确认：体验更简单，适合内部工具或早期测试
+
+### 3. 代码里已经兼容登录模式
+
+应用接好 Supabase 后，左侧会出现：
+
+- 邮箱注册
+- 邮箱登录
+- 登录后自动切换为“个人预设空间”
+
+也就是说，登录功能不需要额外再加新的 Secrets，仍然沿用：
+
+```toml
+SUPABASE_URL = "你的 Supabase Project URL"
+SUPABASE_ANON_KEY = "你的 Supabase anon key"
+```
+
 ## 第二步：在 Streamlit Community Cloud 部署
 
 1. 打开 [Streamlit Community Cloud](https://share.streamlit.io/)
