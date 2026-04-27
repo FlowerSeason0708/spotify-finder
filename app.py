@@ -79,46 +79,38 @@ Calvin Harris"""
 APP_SUBTITLE = "发现候选新歌，手动挑选，导出到 Spotify、网易云音乐、QQ 音乐、酷狗音乐等多个平台。"
 CUSTOM_TEMPLATE_FILE = Path(__file__).with_name("user_artist_templates.json")
 ARTIST_TEMPLATES = {
-    "通用流行": """Taylor Swift
-Drake
+    "热门流行": """Taylor Swift
 The Weeknd
 Dua Lipa
-SZA
 Billie Eilish
-Bad Bunny
-Calvin Harris""",
-    "Melodic Techno": """Anyma
-Tale Of Us
-ARTBAT
-Massano
-Adriatique
-Mind Against
-Kevin de Vries
-Agents Of Time""",
-    "House / EDM": """Fred again..
-Calvin Harris
-John Summit
-Dom Dolla
-FISHER
-Meduza
-David Guetta
-Skrillex""",
-    "Hip-Hop / Rap": """Drake
+Ariana Grande
+Olivia Rodrigo
+Justin Bieber
+Ed Sheeran""",
+    "说唱 / Hip-Hop": """Drake
 Travis Scott
 Kendrick Lamar
 Future
-Lil Baby
 21 Savage
 Doja Cat
-Nicki Minaj""",
-    "Indie / Alternative": """Lana Del Rey
-Arctic Monkeys
-The 1975
-Tame Impala
-Phoebe Bridgers
-Mitski
-Clairo
-Cigarettes After Sex""",
+Nicki Minaj
+Lil Baby""",
+    "电音 / 舞曲": """Calvin Harris
+David Guetta
+Skrillex
+Fred again..
+Marshmello
+Martin Garrix
+Zedd
+Tiësto""",
+    "华语流行": """周杰伦
+林俊杰
+邓紫棋
+薛之谦
+五月天
+张惠妹
+蔡依林
+李荣浩""",
     "K-Pop": """BTS
 BLACKPINK
 NewJeans
@@ -127,6 +119,14 @@ Stray Kids
 SEVENTEEN
 aespa
 IVE""",
+    "独立 / 氛围": """Lana Del Rey
+Arctic Monkeys
+The 1975
+Tame Impala
+Mitski
+Clairo
+Phoebe Bridgers
+Cigarettes After Sex""",
 }
 
 
